@@ -1,0 +1,13 @@
+# secrets
+.env
+ 
+# environment
+.venv/
+__pycache__/
+*.pyc
+ 
+# generated output
+plots/
+ 
+# editor
+.vscode/
