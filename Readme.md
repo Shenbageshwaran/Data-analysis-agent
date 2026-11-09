@@ -1,119 +1,92 @@
 # Data Analysis Agent
 
-A small LLM agent that answers questions about a tabular dataset in plain English.
+An LLM agent that answers questions about a CSV dataset. The user uploads a csv file, and asks a question, particularly regarding exploratory data analysis.
+The agent decides which functions to execute from the available tools (functions). 
 
-I built this to understand how tool-calling agents actually work, so there's no agent framework here. It's the OpenAI Responses API, a loop of about 40 lines, and six analysis functions that I wrote and tested myself. The model decides *which* analysis to run. Python does the actual math.
+I started this project to learn how tool-calling agents work. The first version has no framework, just the OpenAI Responses API and a short loop. Once that worked, I rebuilt it with LangChain and added a Streamlit dashboard and conversation memory.
 
-## Why I built it this way
-
-My background is in ML and statistical modeling, and I wanted to learn agentic AI from the ground up instead of starting with LangChain or LangGraph. Writing the loop by hand made the moving parts clear to me:
-
-- the **functions** are ordinary Python,
-- the **tool definitions** (JSON Schema) are what the model reads,
-- the **model** never runs anything; it only asks for a function call with arguments,
-- my **code** runs the function and sends the result back, and this repeats until the model has an answer.
-
-One design decision shaped everything else: **the LLM chooses the analysis, but it never computes statistics itself.** Every number in an answer has to come from a tool, and the statistical rules (confidence intervals, multiple-testing correction, sample-size checks) are written into the functions rather than left to the prompt.
+## Dashboard Preview
+![1.](image.png)
+![2.](image-1.png)
 
 ## How it works
+1. The user uploads the csv file, and asks a question to the model.
+2. The model reads the question, and decides which analysis to run from the available tools.
+3. My code runs the selected tool on the dataset and sends the result back to the model.
+4. The user can ask follow-up questions, because the app saves the conversation for the current session.
 
-```
-question -> model picks tool(s) -> my code runs them -> results go back to the model
-                ^                                                  |
-                |__________________ repeat until done _____________|
-```
-
-The dataset is loaded once by my code. The model never sees the raw data; it only sees column names and tool results. It passes column names as arguments, and the dispatcher supplies the DataFrame.
+One important thing is that the model never sees the raw data, only column names and tool results. Every number in the the model's response must come from the pre-defined tools.
 
 ## Tools
 
-| Tool | What it does |
+| Tool | Description |
 |---|---|
-| `inspect_data` | Rows/columns, dtypes, missing values, duplicates, constant and ID-like columns, first 5 rows |
-| `describe_variables` | Summary stats and skewness for numeric columns; counts and top value for categorical ones |
-| `plot_distribution` | Histogram with a density curve, saved as a PNG |
-| `calculate_correlation` | Pearson or Spearman r with n, p-value, and 95% CI, optionally split by group |
-| `correlation_matrix` | All pairwise correlations, ranked by \|r\|, with FDR-adjusted p-values and redundancy flags |
-| `groupby_analysis` | n, mean, std, median, and a t-based 95% CI of the mean for each group |
+| `inspect_data` | Rows, columns, data types, missing values, duplicates |
+| `describe_variables` | Summary stats for numeric and categorical columns |
+| `plot_distribution` | Histogram with a density curve |
+| `calculate_correlation` | Pearson or Spearman correlation, optionally by group |
+| `correlation_matrix` | All pairwise correlations, ranked, with FDR correction |
+| `groupby_analysis` | Mean, std, median, and 95% CI for each group |
 
-## Statistical safeguards
+## Statistics
 
-These live in the code, not in the prompt:
+I put the statistical checks inside the functions instead of the prompt, so the agent can't skip them.
 
-- 95% confidence intervals for correlations use the Fisher z-transform (with the Bonett–Wright adjustment for Spearman).
-- Group mean confidence intervals use the t-distribution, not 1.96, since some groups are small.
-- `correlation_matrix` applies Benjamini–Hochberg FDR correction across all pairs, so testing many pairs doesn't produce false "significant" results.
-- Missing values are dropped pairwise, and the number dropped is reported.
-- Every result includes `n`, and small samples trigger a warning.
-- Bad requests (wrong column names, categorical columns in a correlation) return an error message instead of crashing. The model reads the error and corrects itself.
+- Correlations always come with n and a 95% confidence interval.
+- `correlation_matrix` uses Benjamini-Hochberg FDR correction, since it tests many pairs at once.
+- Group means use t-based confidence intervals because some groups are small.
+- Small samples get a warning.
+- Bad requests, like a wrong column name, return an error message. The model reads it and fixes its call.
 
-## Example
 
-I tested it on the [Palmer Penguins](https://allisonhorst.github.io/palmerpenguins/) dataset.
+## Example Q/A discussion with the model
 
-**Question:** *"Find the variable most strongly correlated with body mass, then show how that variable differs by species."*
+I tested it on the Palmer Penguins dataset.
 
-The log shows it working in two rounds: first a correlation matrix, then a follow-up that depends on the first result.
+**Question:** "Find the variable most strongly correlated with body mass, then show how it differs by species."
 
-```
-[step 0] inspect_data({})
-[step 1] correlation_matrix({'columns': [...], 'method': 'pearson', ...})
-[step 2] calculate_correlation({'col1': 'flipper_length_mm', 'col2': 'body_mass_g', ...})
-[step 2] groupby_analysis({'group_col': 'species', 'target_col': 'flipper_length_mm'})
-```
+It ran a correlation matrix and found flipper length (r = 0.871, 95% CI 0.843 to 0.895, n = 342). Then it compared flipper length across species. It also pointed out that the overall correlation could partly come from differences between species, which I thought was a good catch.
 
-It reported flipper length as the strongest correlate (r = 0.871, 95% CI 0.843–0.895, n = 342), showed Gentoo penguins have the longest flippers, and pointed out that the pooled correlation may partly reflect differences between species.
+When I asked what *causes* penguins to be heavier, it said the data only shows associations, not causes. That was the behavior I wanted.
 
-The behavior I cared most about was how it handled requests it *shouldn't* fulfill:
-
-- Asked for a Pearson correlation between `species` and body mass, it explained why that isn't valid for a categorical variable and suggested a group comparison instead.
-- Asked what *causes* penguins to be heavier, it reported the associations and said plainly that the data can't establish causes.
-
-## Setup
-
+## How to run locally
 ```bash
 git clone https://github.com/Shenbageshwaran/data-analysis-agent.git
 cd data-analysis-agent
 python -m venv .venv
-.venv\Scripts\activate          # Windows; on macOS/Linux: source .venv/bin/activate
+.venv\Scripts\activate          # on macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 ```
+Create a new file named .env, and add your OPENAI API key to the file.
+Example code in the .env file:    OPENAI_API_KEY=your-key-here
 
-Copy `.env.example` to `.env` and add your own OpenAI API key. Then:
+To run the dashboard: 
+```bash
+streamlit run app.py
+```
+To run the first version in the terminal:
 
 ```bash
 python data_analysis_agent.py
 ```
+# Files
 
-Change the question at the bottom of `data_analysis_agent.py` to ask something else. Plots are saved to `plots/`.
-
-## Project structure
-
-```
-data_analysis_agent.py            # agent loop, dispatcher, system instructions
-data_analysis_agent_functions.py  # the six analysis tools + JSON helper
-da_tools_schema.py                # JSON Schema tool definitions
-data/test_data.csv                # Palmer Penguins
-examples/agent.py                 # my first toy agent (add + fake weather)
-```
-
-`examples/agent.py` is the two-function agent I wrote first, to understand tool calling before working with real data. I've kept it because it's the simplest version of the same loop.
+- `app.py`: Streamlit dashboard
+- `data_analysis_agent_langchain_v2.py`: LangChain agent with memory
+- `data_analysis_agent.py`: first version with the hand-written loop
+- `data_analysis_agent_functions.py`: the six analysis tools
+- `da_tools_schema.py`: tool definitions for the first version
+- `data/test_data.csv`: Palmer Penguins data
+- `examples/agent.py`: my first toy agent, kept as the simplest example
 
 ## Limitations
 
-- Each question starts fresh. There's no conversation memory yet, so "now do the same for island" won't work.
-- There are no significance tests between groups yet. The agent says so instead of making up a p-value.
-- `plot_distribution` can't split by group, so a per-species histogram isn't possible yet.
-- When asked to do something it has no tool for (like training a model), it sometimes writes code for you instead of just saying it can't.
+- Memory only lasts while the app is running. Restarting it clears the chat.
+- No significance tests between groups yet. I'm planning a `compare_groups` tool next.
+- It can't make plots split by group yet.
 
-## What's next
-
-- `compare_groups`: t-test / Mann–Whitney / ANOVA / Kruskal–Wallis, with effect sizes
-- grouped plots (box, violin, per-group histograms)
-- an evaluation script that runs a fixed set of questions and records which tools were called and whether the answer was right
-- conversation memory
-- a LangGraph version of the same agent, to compare with the hand-written loop
+## AI use disclosure
+I used Claude to help with parts of the code and this README. The analysis functions and the design decisions are my own.
 
 ## Data
-
-Palmer Penguins data from Horst, Hill & Gorman (2020), collected by Dr. Kristen Gorman at Palmer Station, Antarctica. Released under CC0.
+The Palmer Penguins data is from Horst, Hill & Gorman (2020), collected by Dr. Kristen Gorman at Palmer Station, Antarctica (CC0).
